@@ -5,6 +5,8 @@ estado en memoria (sin persistencia).
 """
 import argparse
 import asyncio
+import sys
+from contextlib import AsyncExitStack
 
 PUERTO_POR_DEFECTO = 6000
 
@@ -126,13 +128,28 @@ async def main():
     parser.add_argument("--puerto", type=int, default=PUERTO_POR_DEFECTO)
     args = parser.parse_args()
 
-    servidor_v4 = await asyncio.start_server(manejar_cliente, host="0.0.0.0", port=args.puerto)
-    servidor_v6 = await asyncio.start_server(manejar_cliente, host="::", port=args.puerto)
+    familias = [
+        ("IPv4", "0.0.0.0"),
+        ("IPv6", "::"),
+    ]
+    servidores = []
+    for nombre, host in familias:
+        try:
+            servidor = await asyncio.start_server(manejar_cliente, host=host, port=args.puerto)
+            servidores.append((nombre, servidor))
+        except OSError as e:
+            print(f"{nombre} no disponible en este sistema, se omite: {e}")
 
-    print(f"Escuchando en IPv4 y IPv6, puerto {args.puerto}")
+    if not servidores:
+        print("Ninguna familia de direcciones pudo levantarse, abortando.")
+        sys.exit(1)
 
-    async with servidor_v4, servidor_v6:
-        await asyncio.gather(servidor_v4.serve_forever(), servidor_v6.serve_forever())
+    print(f"Escuchando en {', '.join(nombre for nombre, _ in servidores)}, puerto {args.puerto}")
+
+    async with AsyncExitStack() as stack:
+        for _, servidor in servidores:
+            await stack.enter_async_context(servidor)
+        await asyncio.gather(*(servidor.serve_forever() for _, servidor in servidores))
 
 
 if __name__ == "__main__":

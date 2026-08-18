@@ -128,3 +128,11 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
+# crear --vet "Dr. Gomez" --dueno "Juan Perez" --mascota "Firulais" --fecha 2026-07-15 --hora 10:00
+# listar
+# confirmar 1
+# listar
+# cancelar 1
+# listar
