@@ -52,6 +52,8 @@ async def detener_persistencia():
     await proceso_persistencia.wait()
 
 
+
+
 async def enviar_a_persistencia(comando):
     async with lock_persistencia:
         proceso_persistencia.stdin.write((comando + "\n").encode())
