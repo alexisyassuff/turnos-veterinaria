@@ -1,71 +1,102 @@
-"""Servidor de turnos veterinaria - v1.
+"""Servidor de turnos veterinaria - v2.
 
-Asyncio dual-stack (IPv4 + IPv6), protocolo texto plano linea por linea,
-estado en memoria (sin persistencia).
+Dual-stack IPv4/IPv6 (sin cambios respecto a v1). El estado ya no vive
+en memoria: cada operacion se delega a un proceso de persistencia
+separado (persistencia.py), lanzado como subproceso y hablado por
+stdin/stdout linea por linea (Pipes). El servidor arma el protocolo de
+red, pero nunca toca SQL.
 """
 import argparse
 import asyncio
 import sys
 from contextlib import AsyncExitStack
+from pathlib import Path
 
 PUERTO_POR_DEFECTO = 6000
+RUTA_PERSISTENCIA = Path(__file__).parent / "persistencia.py"
 
-turnos = {}
-contador_id = 0
-lock_estado = asyncio.Lock()
+proceso_persistencia = None
+lock_persistencia = asyncio.Lock()
 
 
-def _formatear_turno(id_turno, turno):
-    return "|".join([
-        str(id_turno),
-        turno["veterinario"],
-        turno["dueno"],
-        turno["mascota"],
-        turno["fecha"],
-        turno["hora"],
-        turno["estado"],
-    ])
+async def iniciar_persistencia(args):
+    global proceso_persistencia
+    comando = [sys.executable, str(RUTA_PERSISTENCIA)]
+    opciones_db = {
+        "--db-host": args.db_host,
+        "--db-port": args.db_port,
+        "--db-user": args.db_user,
+        "--db-password": args.db_password,
+        "--db-name": args.db_name,
+    }
+    for bandera, valor in opciones_db.items():
+        if valor is not None:
+            comando += [bandera, str(valor)]
+
+    proceso_persistencia = await asyncio.create_subprocess_exec(
+        *comando,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+    )
+
+
+async def detener_persistencia():
+    if proceso_persistencia is None:
+        return
+    try:
+        proceso_persistencia.stdin.write(b"DB_SALIR\n")
+        await proceso_persistencia.stdin.drain()
+    except (BrokenPipeError, ConnectionResetError):
+        pass
+    proceso_persistencia.stdin.close()
+    await proceso_persistencia.wait()
+
+
+
+
+async def enviar_a_persistencia(comando):
+    async with lock_persistencia:
+        proceso_persistencia.stdin.write((comando + "\n").encode())
+        await proceso_persistencia.stdin.drain()
+
+        linea = await proceso_persistencia.stdout.readline()
+        if not linea:
+            return "ERROR|conexion con el proceso de persistencia perdida"
+        respuesta = linea.decode().rstrip("\n")
+
+        if respuesta.startswith("OK|LISTAR|"):
+            cantidad = int(respuesta.split("|")[2])
+            filas = []
+            for _ in range(cantidad):
+                fila = await proceso_persistencia.stdout.readline()
+                filas.append(fila.decode().rstrip("\n"))
+            return "\n".join([respuesta] + filas)
+
+        return respuesta
 
 
 async def manejar_crear(partes):
-    global contador_id
     if len(partes) != 6:
         return "ERROR|formato invalido, se esperan 5 argumentos"
 
     _, veterinario, dueno, mascota, fecha, hora = partes
-    async with lock_estado:
-        contador_id += 1
-        id_turno = contador_id
-        turnos[id_turno] = {
-            "veterinario": veterinario,
-            "dueno": dueno,
-            "mascota": mascota,
-            "fecha": fecha,
-            "hora": hora,
-            "estado": "pendiente",
-        }
-    return f"OK|{id_turno}"
+    return await enviar_a_persistencia(f"DB_CREAR_TURNO|{veterinario}|{dueno}|{mascota}|{fecha}|{hora}")
 
 
 async def manejar_listar():
-    async with lock_estado:
-        lineas = [_formatear_turno(id_turno, turno) for id_turno, turno in turnos.items()]
-    return "\n".join([f"OK|LISTAR|{len(lineas)}"] + lineas)
+    return await enviar_a_persistencia("DB_LISTAR_TURNOS")
 
 
 async def _cambiar_estado(partes, nuevo_estado):
     if len(partes) != 2:
         return "ERROR|formato invalido, se espera un id de turno"
     try:
-        id_turno = int(partes[1])
+        int(partes[1])
     except ValueError:
         return "ERROR|id de turno invalido"
 
-    async with lock_estado:
-        if id_turno not in turnos:
-            return "ERROR|turno inexistente"
-        turnos[id_turno]["estado"] = nuevo_estado
-    return "OK"
+    comando = "DB_CONFIRMAR" if nuevo_estado == "confirmado" else "DB_CANCELAR"
+    return await enviar_a_persistencia(f"{comando}|{partes[1]}")
 
 
 async def manejar_cancelar(partes):
@@ -126,7 +157,14 @@ async def manejar_cliente(reader, writer):
 async def main():
     parser = argparse.ArgumentParser(description="Servidor de turnos veterinaria")
     parser.add_argument("--puerto", type=int, default=PUERTO_POR_DEFECTO)
+    parser.add_argument("--db-host", default=None)
+    parser.add_argument("--db-port", type=int, default=None)
+    parser.add_argument("--db-user", default=None)
+    parser.add_argument("--db-password", default=None)
+    parser.add_argument("--db-name", default=None)
     args = parser.parse_args()
+
+    await iniciar_persistencia(args)
 
     familias = [
         ("IPv4", "0.0.0.0"),
@@ -142,14 +180,18 @@ async def main():
 
     if not servidores:
         print("Ninguna familia de direcciones pudo levantarse, abortando.")
+        await detener_persistencia()
         sys.exit(1)
 
     print(f"Escuchando en {', '.join(nombre for nombre, _ in servidores)}, puerto {args.puerto}")
 
-    async with AsyncExitStack() as stack:
-        for _, servidor in servidores:
-            await stack.enter_async_context(servidor)
-        await asyncio.gather(*(servidor.serve_forever() for _, servidor in servidores))
+    try:
+        async with AsyncExitStack() as stack:
+            for _, servidor in servidores:
+                await stack.enter_async_context(servidor)
+            await asyncio.gather(*(servidor.serve_forever() for _, servidor in servidores))
+    finally:
+        await detener_persistencia()
 
 
 if __name__ == "__main__":
