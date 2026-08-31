@@ -8,6 +8,7 @@ red, pero nunca toca SQL.
 """
 import argparse
 import asyncio
+import socket
 import sys
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -55,7 +56,7 @@ async def detener_persistencia():
 
 
 async def enviar_a_persistencia(comando):
-    async with lock_persistencia:
+    async def _intercambio():
         proceso_persistencia.stdin.write((comando + "\n").encode())
         await proceso_persistencia.stdin.drain()
 
@@ -74,13 +75,21 @@ async def enviar_a_persistencia(comando):
 
         return respuesta
 
+    async with lock_persistencia:
+        try:
+            return await asyncio.wait_for(_intercambio(), timeout=5)
+        except asyncio.TimeoutError:
+            return "ERROR|timeout esperando al proceso de persistencia"
+
 
 async def manejar_crear(partes):
-    if len(partes) != 6:
-        return "ERROR|formato invalido, se esperan 5 argumentos"
+    if len(partes) != 7:
+        return "ERROR|formato invalido, se esperan 6 argumentos"
 
-    _, veterinario, dueno, mascota, fecha, hora = partes
-    return await enviar_a_persistencia(f"DB_CREAR_TURNO|{veterinario}|{dueno}|{mascota}|{fecha}|{hora}")
+    _, veterinario, dueno, email, mascota, fecha, hora = partes
+    return await enviar_a_persistencia(
+        f"DB_CREAR_TURNO|{veterinario}|{dueno}|{email}|{mascota}|{fecha}|{hora}"
+    )
 
 
 async def manejar_listar():
@@ -166,10 +175,20 @@ async def main():
 
     await iniciar_persistencia(args)
 
-    familias = [
-        ("IPv4", "0.0.0.0"),
-        ("IPv6", "::"),
+    familias_candidatas = [
+        ("IPv4", socket.AF_INET, "0.0.0.0"),
+        ("IPv6", socket.AF_INET6, "::"),
     ]
+    familias = []
+    for nombre, familia, host in familias_candidatas:
+        try:
+            socket.getaddrinfo(
+                None, args.puerto, family=familia, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE
+            )
+            familias.append((nombre, host))
+        except socket.gaierror as e:
+            print(f"{nombre} no disponible en este sistema, se omite: {e}")
+
     servidores = []
     for nombre, host in familias:
         try:

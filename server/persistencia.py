@@ -29,6 +29,9 @@ SENTENCIAS_ESQUEMA = [
     )
     """,
     """
+    ALTER TABLE duenos ADD COLUMN IF NOT EXISTS email VARCHAR(120)
+    """,
+    """
     CREATE TABLE IF NOT EXISTS mascotas (
         id_mascota INT AUTO_INCREMENT PRIMARY KEY,
         id_dueno INT NOT NULL,
@@ -70,7 +73,7 @@ def conectar(args):
     return conexion
 
 
-def _obtener_o_crear(cursor, tabla, col_id, filtros):
+def _obtener_o_crear(cursor, tabla, col_id, filtros, extra=None):
     columnas = list(filtros.keys())
     valores = list(filtros.values())
     condicion = " AND ".join(f"{columna}=%s" for columna in columnas)
@@ -79,9 +82,12 @@ def _obtener_o_crear(cursor, tabla, col_id, filtros):
     if fila:
         return fila[0]
 
-    columnas_insert = ", ".join(columnas)
-    placeholders = ", ".join(["%s"] * len(columnas))
-    cursor.execute(f"INSERT INTO {tabla} ({columnas_insert}) VALUES ({placeholders})", valores)
+    extra = extra or {}
+    columnas_insert = columnas + list(extra.keys())
+    valores_insert = valores + list(extra.values())
+    columnas_str = ", ".join(columnas_insert)
+    placeholders = ", ".join(["%s"] * len(columnas_insert))
+    cursor.execute(f"INSERT INTO {tabla} ({columnas_str}) VALUES ({placeholders})", valores_insert)
     return cursor.lastrowid
 
 
@@ -95,9 +101,9 @@ def _formatear_hora(valor):
 
 
 def manejar_crear_turno(cursor, partes):
-    if len(partes) != 6:
-        return "ERROR|formato invalido, se esperan 5 argumentos"
-    _, vet, dueno, mascota, fecha, hora = partes
+    if len(partes) != 7:
+        return "ERROR|formato invalido, se esperan 6 argumentos"
+    _, vet, dueno, email, mascota, fecha, hora = partes
 
     try:
         fecha_valor = datetime.date.fromisoformat(fecha)
@@ -105,7 +111,7 @@ def manejar_crear_turno(cursor, partes):
     except ValueError:
         return "ERROR|formato invalido, use fecha AAAA-MM-DD y hora HH:MM"
 
-    id_dueno = _obtener_o_crear(cursor, "duenos", "id_dueno", {"nombre": dueno})
+    id_dueno = _obtener_o_crear(cursor, "duenos", "id_dueno", {"nombre": dueno}, extra={"email": email})
     id_mascota = _obtener_o_crear(
         cursor, "mascotas", "id_mascota", {"id_dueno": id_dueno, "nombre": mascota}
     )

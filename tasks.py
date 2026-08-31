@@ -34,10 +34,8 @@ DB_NAME = os.environ.get("TURNOS_DB_NAME", "turnos_vet")
 BROKER_URL = os.environ.get("TURNOS_CELERY_BROKER_URL", "sqla+sqlite:///celery_broker.db")
 BACKEND_URL = os.environ.get("TURNOS_CELERY_BACKEND_URL", "db+sqlite:///celery_results.db")
 
-# Notificacion por mail. No tenemos el email del dueno en la BD (v2 solo
-# guarda su nombre), asi que todo recordatorio va a una casilla fija de
-# prueba y el nombre del dueno queda en el asunto para identificar el turno.
-EMAIL_DESTINO = os.environ.get("TURNOS_EMAIL_DESTINO", "dueno@ejemplo.com")
+# Notificacion por mail al dueno real del turno (columna duenos.email,
+# agregada en persistencia.py).
 SMTP_HOST = os.environ.get("TURNOS_SMTP_HOST", "localhost")
 SMTP_PORT = int(os.environ.get("TURNOS_SMTP_PORT", "25"))
 SMTP_USER = os.environ.get("TURNOS_SMTP_USER", "")
@@ -45,7 +43,9 @@ SMTP_PASSWORD = os.environ.get("TURNOS_SMTP_PASSWORD", "")
 SMTP_FROM = os.environ.get("TURNOS_SMTP_FROM", "turnos@veterinaria.local")
 
 VENTANA_AVISO_HORAS = 24
-INTERVALO_REVISION_SEGUNDOS = 60
+# INTERVALO_REVISION_SEGUNDOS = 60
+# INTERVALO_REVISION_SEGUNDOS = 60
+INTERVALO_REVISION_SEGUNDOS = 10   
 
 app = Celery("tasks", broker=BROKER_URL, backend=BACKEND_URL)
 app.conf.beat_schedule = {
@@ -99,7 +99,7 @@ def revisar_turnos_proximos():
             )
             cursor.execute(
                 """
-                SELECT t.id_turno, v.nombre, d.nombre, m.nombre, t.fecha, t.hora
+                SELECT t.id_turno, v.nombre, d.nombre, m.nombre, t.fecha, t.hora, d.email
                 FROM turnos t
                 JOIN veterinarios v ON v.id_veterinario = t.id_veterinario
                 JOIN mascotas m ON m.id_mascota = t.id_mascota
@@ -112,9 +112,9 @@ def revisar_turnos_proximos():
             )
             turnos = cursor.fetchall()
 
-            for id_turno, vet, dueno, mascota, fecha, hora in turnos:
+            for id_turno, vet, dueno, mascota, fecha, hora, email in turnos:
                 enviar_recordatorio.delay(
-                    id_turno, vet, dueno, mascota, fecha.isoformat(), _formatear_hora(hora)
+                    id_turno, vet, dueno, mascota, fecha.isoformat(), _formatear_hora(hora), email
                 )
                 cursor.execute(
                     "UPDATE turnos SET recordatorio_enviado = 1 WHERE id_turno = %s",
@@ -125,18 +125,19 @@ def revisar_turnos_proximos():
 
 
 @app.task
-def enviar_recordatorio(id_turno, vet, dueno, mascota, fecha, hora):
+def enviar_recordatorio(id_turno, vet, dueno, mascota, fecha, hora, email):
     """Manda el mail de recordatorio para un turno puntual via SMTP."""
     mensaje = EmailMessage()
     mensaje["Subject"] = f"Recordatorio de turno para {dueno}"
     mensaje["From"] = SMTP_FROM
-    mensaje["To"] = EMAIL_DESTINO
+    mensaje["To"] = email
     mensaje.set_content(
         f"Turno #{id_turno}\n"
         f"Dueno: {dueno}\n"
         f"Mascota: {mascota}\n"
         f"Veterinario: {vet}\n"
         f"Fecha y hora: {fecha} {hora}\n"
+        "Favor de comunicarse para confirmar asistencia o cancelar su turno para liberar el lugar. Muchas gracias"
     )
 
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as smtp:

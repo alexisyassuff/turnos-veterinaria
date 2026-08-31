@@ -52,6 +52,7 @@ persistencia busca o crea el registro correspondiente.
 ## Funciones clave por capa
 
 **Servidor** (`server/server.py`)
+
 - Dos `asyncio.start_server` en paralelo (IPv4 + IPv6) vía `asyncio.gather`.
 - Lanza y supervisa el subproceso de persistencia
   (`asyncio.create_subprocess_exec`).
@@ -61,11 +62,13 @@ persistencia busca o crea el registro correspondiente.
   y devuelve la respuesta casi sin tocar.
 
 **Persistencia** (`server/persistencia.py`)
+
 - Loop síncrono sobre stdin/stdout, único proceso que arma SQL.
 - Conexión a MariaDB por socket con PyMySQL (`autocommit=True`).
 - Crea el esquema (`CREATE TABLE IF NOT EXISTS`) al arrancar, sin setup manual.
 
 **Cliente** (`client/client.py`)
+
 - Conexión persistente (`asyncio.open_connection`), REPL con múltiples
   comandos por sesión.
 - Parseo de subcomandos con `ArgumentParser` que no mata el proceso ante
@@ -75,13 +78,13 @@ persistencia busca o crea el registro correspondiente.
 
 Texto plano, un comando por línea, `COMANDO|arg1|arg2|...`.
 
-| Comando | Respuesta |
-|---|---|
-| `CREAR\|vet\|dueño\|mascota\|fecha\|hora` | `OK\|<id>` |
-| `LISTAR` | `OK\|LISTAR\|<n>` + n líneas |
-| `CONFIRMAR\|<id>` | `OK` |
-| `CANCELAR\|<id>` | `OK` |
-| `SALIR` | cierra la conexión |
+| Comando                                   | Respuesta                    |
+| ----------------------------------------- | ---------------------------- |
+| `CREAR\|vet\|dueño\|mascota\|fecha\|hora` | `OK\|<id>`                   |
+| `LISTAR`                                  | `OK\|LISTAR\|<n>` + n líneas |
+| `CONFIRMAR\|<id>`                         | `OK`                         |
+| `CANCELAR\|<id>`                          | `OK`                         |
+| `SALIR`                                   | cierra la conexión           |
 
 Errores: `ERROR|<motivo legible>` en cualquier comando.
 
@@ -91,7 +94,6 @@ Errores: `ERROR|<motivo legible>` en cualquier comando.
 - ✅ **v2** — MariaDB, modelado relacional, proceso de persistencia por pipe.
 - ⏳ **v3** — Celery + SQLite como broker, alertas de turnos por vencer.
 - ⏳ **v4** — Docker Compose (servidor + MariaDB + broker).
-- ⏳ **v5+** — historial clínico, roles, features adicionales.
 
 ## Cómo correrlo
 

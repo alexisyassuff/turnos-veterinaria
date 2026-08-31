@@ -1,0 +1,32 @@
+{
+  "files.exclude": {
+    "**/.git": true,
+    "**/.svn": true,
+    "**/.hg": true,
+    "**/.DS_Store": true,
+    "**/Thumbs.db": true,
+    "**/.idea": true,
+    "**/target": true,
+    "**/.mvn": true,
+    "**/HELP.md": true,
+    "**/.github": true,
+    "**/.gradle": true,
+    "**/gradle": true,
+    "**/.gitattributes": true,
+    "**/backend.log": true,
+    "**/gradle.properties": true,
+    "**/gradlew": true,
+    "**/gradlew.bat": true,
+    "**/local.properties": true,
+    "**/mvnw": true,
+    "**/mvnw.cmd": true,
+    "**/pom.xml": true,
+    "**/settings.gradle.kts": true,
+    "**/build.gradle.kts": true,
+    "**/.kotlin": true,
+    "**/*build": true,
+    "**/backend/src/main/java/com/cine/backend/model/ExternalToken.java": true,
+    "**/proxy/src/main/java/com/cine/proxy/service/ProxyEventoInitializationService.java": true
+  },
+  "explorerExclude.backup": {}
+}
