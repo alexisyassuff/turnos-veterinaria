@@ -22,6 +22,7 @@ def crear_parser_repl():
     p_crear = subparsers.add_parser("crear", help="Crear un turno nuevo")
     p_crear.add_argument("--vet", required=True)
     p_crear.add_argument("--dueno", required=True)
+    p_crear.add_argument("--email", required=True)
     p_crear.add_argument("--mascota", required=True)
     p_crear.add_argument("--fecha", required=True)
     p_crear.add_argument("--hora", required=True)
@@ -41,7 +42,7 @@ def crear_parser_repl():
 
 def construir_mensaje(args):
     if args.comando == "crear":
-        return f"CREAR|{args.vet}|{args.dueno}|{args.mascota}|{args.fecha}|{args.hora}"
+        return f"CREAR|{args.vet}|{args.dueno}|{args.email}|{args.mascota}|{args.fecha}|{args.hora}"
     if args.comando == "listar":
         return "LISTAR"
     if args.comando == "cancelar":
@@ -130,7 +131,7 @@ if __name__ == "__main__":
     asyncio.run(main())
 
 
-# crear --vet "Dr. Gomez" --dueno "Juan Perez" --mascota "Firulais" --fecha 2026-07-15 --hora 10:00
+# crear --vet "Dr. Gomez" --dueno "Juan Perez" --email "juan@ejemplo.com" --mascota "Firulais" --fecha 2026-07-15 --hora 10:00
 # listar
 # confirmar 1
 # listar

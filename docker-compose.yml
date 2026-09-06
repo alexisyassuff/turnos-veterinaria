@@ -1,0 +1,28 @@
+services:
+  celery-worker:
+    build: .
+    command: celery -A tasks worker --loglevel=info
+    environment:
+      TURNOS_CELERY_BROKER_URL: sqla+sqlite:////app/broker/celery_broker.db
+      TURNOS_DB_HOST: ${TURNOS_DB_HOST:-host.docker.internal}
+      TURNOS_DB_PORT: ${TURNOS_DB_PORT:-3306}
+      TURNOS_DB_USER: ${TURNOS_DB_USER:-root}
+      TURNOS_DB_PASSWORD: ${TURNOS_DB_PASSWORD:-}
+      TURNOS_DB_NAME: ${TURNOS_DB_NAME:-turnos_vet}
+    volumes:
+      - celery_broker:/app/broker/
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  celery-beat:
+    build: .
+    command: celery -A tasks beat --loglevel=info
+    environment:
+      TURNOS_CELERY_BROKER_URL: sqla+sqlite:////app/broker/celery_broker.db
+    volumes:
+      - celery_broker:/app/broker/
+    restart: unless-stopped
+
+volumes:
+  celery_broker:

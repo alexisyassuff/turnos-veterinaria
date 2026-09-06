@@ -29,6 +29,9 @@ SENTENCIAS_ESQUEMA = [
     )
     """,
     """
+    ALTER TABLE duenos ADD COLUMN IF NOT EXISTS email VARCHAR(120)
+    """,
+    """
     CREATE TABLE IF NOT EXISTS mascotas (
         id_mascota INT AUTO_INCREMENT PRIMARY KEY,
         id_dueno INT NOT NULL,
@@ -53,6 +56,47 @@ SENTENCIAS_ESQUEMA = [
 ]
 
 
+def main():
+    parser = argparse.ArgumentParser(description="Proceso de persistencia de turnos veterinaria")
+    parser.add_argument("--db-host", default=os.environ.get("TURNOS_DB_HOST", "127.0.0.1"))
+    parser.add_argument("--db-port", type=int, default=int(os.environ.get("TURNOS_DB_PORT", "3306")))
+    parser.add_argument("--db-user", default=os.environ.get("TURNOS_DB_USER", "root"))
+    parser.add_argument("--db-password", default=os.environ.get("TURNOS_DB_PASSWORD", ""))
+    parser.add_argument("--db-name", default=os.environ.get("TURNOS_DB_NAME", "turnos_vet"))
+    args = parser.parse_args()
+
+    try:
+        conexion = conectar(args)
+    except pymysql.err.MySQLError as error:
+        print(f"No se pudo conectar a la base de datos: {error}", file=sys.stderr, flush=True)
+        sys.exit(1)
+
+    print(
+        f"Proceso de persistencia listo, conectado a {args.db_host}:{args.db_port}/{args.db_name}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+    for linea in sys.stdin:
+        linea = linea.rstrip("\n")
+        if not linea:
+            continue
+
+        with conexion.cursor() as cursor:
+            try:
+                respuesta = procesar_linea(cursor, linea)
+            except pymysql.err.MySQLError as error:
+                respuesta = f"ERROR|fallo de base de datos: {error}"
+
+        if respuesta is None:
+            print("OK|CHAU", flush=True)
+            break
+
+        print(respuesta, flush=True)
+
+    conexion.close()
+
+
 def conectar(args):
     conexion = pymysql.connect(
         host=args.db_host,
@@ -70,34 +114,29 @@ def conectar(args):
     return conexion
 
 
-def _obtener_o_crear(cursor, tabla, col_id, filtros):
-    columnas = list(filtros.keys())
-    valores = list(filtros.values())
-    condicion = " AND ".join(f"{columna}=%s" for columna in columnas)
-    cursor.execute(f"SELECT {col_id} FROM {tabla} WHERE {condicion}", valores)
-    fila = cursor.fetchone()
-    if fila:
-        return fila[0]
 
-    columnas_insert = ", ".join(columnas)
-    placeholders = ", ".join(["%s"] * len(columnas))
-    cursor.execute(f"INSERT INTO {tabla} ({columnas_insert}) VALUES ({placeholders})", valores)
-    return cursor.lastrowid
+def procesar_linea(cursor, linea):
+    partes = linea.split("|")
+    comando = partes[0].upper()
 
+    if comando == "DB_CREAR_TURNO":
+        return manejar_crear_turno(cursor, partes)
+    if comando == "DB_LISTAR_TURNOS":
+        return manejar_listar_turnos(cursor)
+    if comando == "DB_CONFIRMAR":
+        return manejar_cambiar_estado(cursor, partes, "confirmado")
+    if comando == "DB_CANCELAR":
+        return manejar_cambiar_estado(cursor, partes, "cancelado")
+    if comando == "DB_SALIR":
+        return None
 
-def _formatear_hora(valor):
-    if isinstance(valor, datetime.timedelta):
-        total_segundos = int(valor.total_seconds())
-        horas, resto = divmod(total_segundos, 3600)
-        minutos = resto // 60
-        return f"{horas:02d}:{minutos:02d}"
-    return valor.strftime("%H:%M")
+    return "ERROR|comando de persistencia desconocido"
 
 
 def manejar_crear_turno(cursor, partes):
-    if len(partes) != 6:
-        return "ERROR|formato invalido, se esperan 5 argumentos"
-    _, vet, dueno, mascota, fecha, hora = partes
+    if len(partes) != 7:
+        return "ERROR|formato invalido, se esperan 6 argumentos"
+    _, vet, dueno, email, mascota, fecha, hora = partes
 
     try:
         fecha_valor = datetime.date.fromisoformat(fecha)
@@ -105,7 +144,7 @@ def manejar_crear_turno(cursor, partes):
     except ValueError:
         return "ERROR|formato invalido, use fecha AAAA-MM-DD y hora HH:MM"
 
-    id_dueno = _obtener_o_crear(cursor, "duenos", "id_dueno", {"nombre": dueno})
+    id_dueno = _obtener_o_crear(cursor, "duenos", "id_dueno", {"nombre": dueno}, extra={"email": email})
     id_mascota = _obtener_o_crear(
         cursor, "mascotas", "id_mascota", {"id_dueno": id_dueno, "nombre": mascota}
     )
@@ -158,63 +197,33 @@ def manejar_cambiar_estado(cursor, partes, nuevo_estado):
     return "OK"
 
 
-def procesar_linea(cursor, linea):
-    partes = linea.split("|")
-    comando = partes[0].upper()
+def _obtener_o_crear(cursor, tabla, col_id, filtros, extra=None):
+    columnas = list(filtros.keys())
+    valores = list(filtros.values())
+    condicion = " AND ".join(f"{columna}=%s" for columna in columnas)
+    cursor.execute(f"SELECT {col_id} FROM {tabla} WHERE {condicion}", valores)
+    fila = cursor.fetchone()
+    if fila:
+        return fila[0]
 
-    if comando == "DB_CREAR_TURNO":
-        return manejar_crear_turno(cursor, partes)
-    if comando == "DB_LISTAR_TURNOS":
-        return manejar_listar_turnos(cursor)
-    if comando == "DB_CONFIRMAR":
-        return manejar_cambiar_estado(cursor, partes, "confirmado")
-    if comando == "DB_CANCELAR":
-        return manejar_cambiar_estado(cursor, partes, "cancelado")
-    if comando == "DB_SALIR":
-        return None
-
-    return "ERROR|comando de persistencia desconocido"
+    extra = extra or {}
+    columnas_insert = columnas + list(extra.keys())
+    valores_insert = valores + list(extra.values())
+    columnas_str = ", ".join(columnas_insert)
+    placeholders = ", ".join(["%s"] * len(columnas_insert))
+    cursor.execute(f"INSERT INTO {tabla} ({columnas_str}) VALUES ({placeholders})", valores_insert)
+    return cursor.lastrowid
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Proceso de persistencia de turnos veterinaria")
-    parser.add_argument("--db-host", default=os.environ.get("TURNOS_DB_HOST", "127.0.0.1"))
-    parser.add_argument("--db-port", type=int, default=int(os.environ.get("TURNOS_DB_PORT", "3306")))
-    parser.add_argument("--db-user", default=os.environ.get("TURNOS_DB_USER", "root"))
-    parser.add_argument("--db-password", default=os.environ.get("TURNOS_DB_PASSWORD", ""))
-    parser.add_argument("--db-name", default=os.environ.get("TURNOS_DB_NAME", "turnos_vet"))
-    args = parser.parse_args()
 
-    try:
-        conexion = conectar(args)
-    except pymysql.err.MySQLError as error:
-        print(f"No se pudo conectar a la base de datos: {error}", file=sys.stderr, flush=True)
-        sys.exit(1)
 
-    print(
-        f"Proceso de persistencia listo, conectado a {args.db_host}:{args.db_port}/{args.db_name}",
-        file=sys.stderr,
-        flush=True,
-    )
-
-    for linea in sys.stdin:
-        linea = linea.rstrip("\n")
-        if not linea:
-            continue
-
-        with conexion.cursor() as cursor:
-            try:
-                respuesta = procesar_linea(cursor, linea)
-            except pymysql.err.MySQLError as error:
-                respuesta = f"ERROR|fallo de base de datos: {error}"
-
-        if respuesta is None:
-            print("OK|CHAU", flush=True)
-            break
-
-        print(respuesta, flush=True)
-
-    conexion.close()
+def _formatear_hora(valor):
+    if isinstance(valor, datetime.timedelta):
+        total_segundos = int(valor.total_seconds())
+        horas, resto = divmod(total_segundos, 3600)
+        minutos = resto // 60
+        return f"{horas:02d}:{minutos:02d}"
+    return valor.strftime("%H:%M")
 
 
 if __name__ == "__main__":
