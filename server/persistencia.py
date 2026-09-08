@@ -15,6 +15,13 @@ import sys
 
 import pymysql
 
+# Duracion estandar de una consulta: cada turno "ocupa" un bloque de este
+# tamaño para el mismo veterinario. Se valida en Python (no como constraint
+# de MariaDB) porque un rango de superposicion no se puede expresar con un
+# UNIQUE declarativo — el UNIQUE(id_veterinario, fecha, hora) que ya existe
+# sigue ahi y sigue cubriendo el caso de horario identico.
+DURACION_TURNO_MINUTOS = 40
+
 SENTENCIAS_ESQUEMA = [
     """
     CREATE TABLE IF NOT EXISTS veterinarios (
@@ -150,6 +157,15 @@ def manejar_crear_turno(cursor, partes):
     )
     id_vet = _obtener_o_crear(cursor, "veterinarios", "id_veterinario", {"nombre": vet})
 
+    cursor.execute(
+        "SELECT hora FROM turnos WHERE id_veterinario=%s AND fecha=%s",
+        (id_vet, fecha_valor),
+    )
+    minutos_nuevo = hora_valor.hour * 60 + hora_valor.minute
+    for (hora_existente,) in cursor.fetchall():
+        if abs(minutos_nuevo - _hora_a_minutos(hora_existente)) < DURACION_TURNO_MINUTOS:
+            return "ERROR|ese veterinario ya tiene un turno que se superpone en ese horario (bloque de 40 minutos)"
+
     try:
         cursor.execute(
             "INSERT INTO turnos (id_veterinario, id_mascota, fecha, hora) VALUES (%s, %s, %s, %s)",
@@ -224,6 +240,12 @@ def _formatear_hora(valor):
         minutos = resto // 60
         return f"{horas:02d}:{minutos:02d}"
     return valor.strftime("%H:%M")
+
+
+def _hora_a_minutos(valor):
+    if isinstance(valor, datetime.timedelta):
+        return int(valor.total_seconds()) // 60
+    return valor.hour * 60 + valor.minute
 
 
 if __name__ == "__main__":
