@@ -22,6 +22,8 @@ import pymysql
 from celery import Celery
 from dotenv import load_dotenv
 
+from email_recordatorio import construir_html
+
 load_dotenv()
 
 # --- Configuracion por variables de entorno (mismos defaults que persistencia.py) ---
@@ -132,6 +134,14 @@ def enviar_recordatorio(id_turno, vet, dueno, mascota, fecha, hora, email):
         f"Veterinario: {vet}\n"
         f"Fecha y hora: {fecha} {hora}\n"
         "Favor de comunicarse para confirmar asistencia o cancelar su turno para liberar el lugar. Muchas gracias"
+    )
+    # Alternativa HTML (diseño en email_recordatorio.py). Se agrega como
+    # add_alternative -> queda en un multipart/alternative junto con el
+    # texto plano de arriba; los clientes que soportan HTML muestran esta
+    # version, el resto cae al texto plano.
+    mensaje.add_alternative(
+        construir_html(id_turno, vet, dueno, mascota, fecha, hora),
+        subtype="html",
     )
 
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as smtp:

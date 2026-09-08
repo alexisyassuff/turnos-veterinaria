@@ -125,7 +125,7 @@ listar
 
 <!-- -----------------------------------------------------------------------
 
-crear --vet "Dr. Torres" --dueno "Pedro Diaz" --email "a.yassuff@alumno.um.edu.ar" --mascota "Rocky" --fecha 2026-09-08 --hora 16:00
+crear --vet "Dr. Torres" --dueno "Pedro Diaz" --email "a.yassuff@alumno.um.edu.ar" --mascota "Rocky" --fecha 2026-09-08 --hora 22:55
 
 
 

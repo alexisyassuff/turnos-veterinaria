@@ -86,10 +86,19 @@ def construir_html(id_turno, vet, dueno, mascota, fecha, hora):
 
             <!-- Aviso -->
             <tr>
-              <td style="padding:4px 28px 24px 28px;">
+              <td style="padding:4px 28px 20px 28px;">
                 <p style="margin:0; font-size:14px; color:#555555; line-height:1.5;">
-                  Por favor comunicate con nosotros para <strong>confirmar tu asistencia</strong> o <strong>cancelar el turno</strong> y liberar el lugar para otra familia peluda. &iexcl;Muchas gracias! &#128062;
+                  Escribinos para <strong>confirmar tu asistencia</strong> o <strong>cancelar el turno</strong> y liberar el lugar para otra familia peluda. &iexcl;Muchas gracias! &#128062;
                 </p>
+              </td>
+            </tr>
+
+            <!-- Boton de WhatsApp -->
+            <tr>
+              <td style="padding:0 28px 28px 28px; text-align:center;">
+                <a href="https://wa.me/542612568523" style="display:inline-block; background-color:#25D366; color:#ffffff; text-decoration:none; font-weight:bold; font-size:14px; padding:12px 26px; border-radius:30px; font-family: Verdana, Geneva, sans-serif;">
+                  &#128241; Escribinos por WhatsApp
+                </a>
               </td>
             </tr>
 
