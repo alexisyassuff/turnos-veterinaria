@@ -20,6 +20,9 @@ from email.message import EmailMessage
 
 import pymysql
 from celery import Celery
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # --- Configuracion por variables de entorno (mismos defaults que persistencia.py) ---
 DB_HOST = os.environ.get("TURNOS_DB_HOST", "127.0.0.1")
@@ -69,16 +72,6 @@ def _conectar_db():
     )
 
 
-def _formatear_hora(valor):
-    # PyMySQL devuelve las columnas TIME como timedelta, no como time.
-    if isinstance(valor, datetime.timedelta):
-        total_segundos = int(valor.total_seconds())
-        horas, resto = divmod(total_segundos, 3600)
-        minutos = resto // 60
-        return f"{horas:02d}:{minutos:02d}"
-    return valor.strftime("%H:%M")
-
-
 @app.task
 def revisar_turnos_proximos():
     """Busca turnos pendientes dentro de las proximas 24hs y encola su aviso.
@@ -124,6 +117,7 @@ def revisar_turnos_proximos():
         conexion.close()
 
 
+
 @app.task
 def enviar_recordatorio(id_turno, vet, dueno, mascota, fecha, hora, email):
     """Manda el mail de recordatorio para un turno puntual via SMTP."""
@@ -145,3 +139,13 @@ def enviar_recordatorio(id_turno, vet, dueno, mascota, fecha, hora, email):
             smtp.starttls()
             smtp.login(SMTP_USER, SMTP_PASSWORD)
         smtp.send_message(mensaje)
+
+
+def _formatear_hora(valor):
+    # PyMySQL devuelve las columnas TIME como timedelta, no como time.
+    if isinstance(valor, datetime.timedelta):
+        total_segundos = int(valor.total_seconds())
+        horas, resto = divmod(total_segundos, 3600)
+        minutos = resto // 60
+        return f"{horas:02d}:{minutos:02d}"
+    return valor.strftime("%H:%M")

@@ -20,6 +20,58 @@ proceso_persistencia = None
 lock_persistencia = asyncio.Lock()
 
 
+async def main():
+    parser = argparse.ArgumentParser(description="Servidor de turnos veterinaria")
+    parser.add_argument("--puerto", type=int, default=PUERTO_POR_DEFECTO)
+    parser.add_argument("--db-host", default=None)
+    parser.add_argument("--db-port", type=int, default=None)
+    parser.add_argument("--db-user", default=None)
+    parser.add_argument("--db-password", default=None)
+    parser.add_argument("--db-name", default=None)
+    args = parser.parse_args()
+
+    await iniciar_persistencia(args)
+    # Verificacion 1
+
+    familias_candidatas = [
+        ("IPv4", socket.AF_INET, "0.0.0.0"),
+        ("IPv6", socket.AF_INET6, "::"),
+    ]
+    familias = []
+    for nombre, familia, host in familias_candidatas:
+        try:
+            socket.getaddrinfo(
+                None, args.puerto, family=familia, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE
+            )
+            familias.append((nombre, host))
+        except socket.gaierror as e:
+            print(f"{nombre} no disponible en este sistema, se omite: {e}")
+
+    # Verificacion 2
+    servidores = []
+    for nombre, host in familias:
+        try:
+            servidor = await asyncio.start_server(manejar_cliente, host=host, port=args.puerto)
+            servidores.append((nombre, servidor))
+        except OSError as e:
+            print(f"{nombre} no disponible en este sistema, se omite: {e}")
+
+    if not servidores:
+        print("Ninguna familia de direcciones pudo levantarse, abortando.")
+        await detener_persistencia()
+        sys.exit(1)
+
+    print(f"Escuchando en {', '.join(nombre for nombre, _ in servidores)}, puerto {args.puerto}")
+
+    try:
+        async with AsyncExitStack() as stack:
+            for _, servidor in servidores:
+                await stack.enter_async_context(servidor)
+            await asyncio.gather(*(servidor.serve_forever() for _, servidor in servidores))
+    finally:
+        await detener_persistencia()
+
+
 async def iniciar_persistencia(args):
     global proceso_persistencia
     comando = [sys.executable, str(RUTA_PERSISTENCIA)]
@@ -52,34 +104,53 @@ async def detener_persistencia():
     proceso_persistencia.stdin.close()
     await proceso_persistencia.wait()
 
+async def manejar_cliente(reader, writer):
+    direccion = writer.get_extra_info("peername")
+    print(f"Cliente conectado: {direccion}")
+    try:
+        while True:
+            datos = await reader.readline()
+            if not datos:
+                break
+
+            linea = datos.decode().rstrip("\r\n")
+            if not linea:
+                continue
+
+            respuesta = await procesar_linea(linea)
+            if respuesta is None:
+                writer.write(b"OK|CHAU\n")
+                await writer.drain()
+                break
+
+            writer.write((respuesta + "\n").encode())
+            await writer.drain()
+    except ConnectionResetError:
+        pass
+    finally:
+        print(f"Cliente desconectado: {direccion}")
+        writer.close()
+        await writer.wait_closed()
 
 
+async def procesar_linea(linea):
+    partes = linea.split("|")
+    comando = partes[0].upper()
 
-async def enviar_a_persistencia(comando):
-    async def _intercambio():
-        proceso_persistencia.stdin.write((comando + "\n").encode())
-        await proceso_persistencia.stdin.drain()
+    if comando == "CREAR":
+        return await manejar_crear(partes)
+    if comando == "LISTAR":
+        return await manejar_listar()
+    if comando == "CANCELAR":
+        return await manejar_cancelar(partes)
+    if comando == "CONFIRMAR":
+        return await manejar_confirmar(partes)
+    if comando == "SALIR":
+        return None
 
-        linea = await proceso_persistencia.stdout.readline()
-        if not linea:
-            return "ERROR|conexion con el proceso de persistencia perdida"
-        respuesta = linea.decode().rstrip("\n")
+    return "ERROR|comando desconocido"
 
-        if respuesta.startswith("OK|LISTAR|"):
-            cantidad = int(respuesta.split("|")[2])
-            filas = []
-            for _ in range(cantidad):
-                fila = await proceso_persistencia.stdout.readline()
-                filas.append(fila.decode().rstrip("\n"))
-            return "\n".join([respuesta] + filas)
 
-        return respuesta
-
-    async with lock_persistencia:
-        try:
-            return await asyncio.wait_for(_intercambio(), timeout=5)
-        except asyncio.TimeoutError:
-            return "ERROR|timeout esperando al proceso de persistencia"
 
 
 async def manejar_crear(partes):
@@ -115,102 +186,33 @@ async def manejar_cancelar(partes):
 async def manejar_confirmar(partes):
     return await _cambiar_estado(partes, "confirmado")
 
+async def enviar_a_persistencia(comando):
+    async def _intercambio():
+        proceso_persistencia.stdin.write((comando + "\n").encode())
+        await proceso_persistencia.stdin.drain()
 
-async def procesar_linea(linea):
-    partes = linea.split("|")
-    comando = partes[0].upper()
+        linea = await proceso_persistencia.stdout.readline()
+        if not linea:
+            return "ERROR|conexion con el proceso de persistencia perdida"
+        respuesta = linea.decode().rstrip("\n")
 
-    if comando == "CREAR":
-        return await manejar_crear(partes)
-    if comando == "LISTAR":
-        return await manejar_listar()
-    if comando == "CANCELAR":
-        return await manejar_cancelar(partes)
-    if comando == "CONFIRMAR":
-        return await manejar_confirmar(partes)
-    if comando == "SALIR":
-        return None
+        if respuesta.startswith("OK|LISTAR|"):
+            cantidad = int(respuesta.split("|")[2])
+            filas = []
+            for _ in range(cantidad):
+                fila = await proceso_persistencia.stdout.readline()
+                filas.append(fila.decode().rstrip("\n"))
+            return "\n".join([respuesta] + filas)
 
-    return "ERROR|comando desconocido"
+        return respuesta
 
-
-async def manejar_cliente(reader, writer):
-    direccion = writer.get_extra_info("peername")
-    print(f"Cliente conectado: {direccion}")
-    try:
-        while True:
-            datos = await reader.readline()
-            if not datos:
-                break
-
-            linea = datos.decode().rstrip("\r\n")
-            if not linea:
-                continue
-
-            respuesta = await procesar_linea(linea)
-            if respuesta is None:
-                writer.write(b"OK|CHAU\n")
-                await writer.drain()
-                break
-
-            writer.write((respuesta + "\n").encode())
-            await writer.drain()
-    except ConnectionResetError:
-        pass
-    finally:
-        print(f"Cliente desconectado: {direccion}")
-        writer.close()
-        await writer.wait_closed()
-
-
-async def main():
-    parser = argparse.ArgumentParser(description="Servidor de turnos veterinaria")
-    parser.add_argument("--puerto", type=int, default=PUERTO_POR_DEFECTO)
-    parser.add_argument("--db-host", default=None)
-    parser.add_argument("--db-port", type=int, default=None)
-    parser.add_argument("--db-user", default=None)
-    parser.add_argument("--db-password", default=None)
-    parser.add_argument("--db-name", default=None)
-    args = parser.parse_args()
-
-    await iniciar_persistencia(args)
-
-    familias_candidatas = [
-        ("IPv4", socket.AF_INET, "0.0.0.0"),
-        ("IPv6", socket.AF_INET6, "::"),
-    ]
-    familias = []
-    for nombre, familia, host in familias_candidatas:
+    async with lock_persistencia:
         try:
-            socket.getaddrinfo(
-                None, args.puerto, family=familia, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE
-            )
-            familias.append((nombre, host))
-        except socket.gaierror as e:
-            print(f"{nombre} no disponible en este sistema, se omite: {e}")
+            return await asyncio.wait_for(_intercambio(), timeout=5)
+        except asyncio.TimeoutError:
+            return "ERROR|timeout esperando al proceso de persistencia"
 
-    servidores = []
-    for nombre, host in familias:
-        try:
-            servidor = await asyncio.start_server(manejar_cliente, host=host, port=args.puerto)
-            servidores.append((nombre, servidor))
-        except OSError as e:
-            print(f"{nombre} no disponible en este sistema, se omite: {e}")
 
-    if not servidores:
-        print("Ninguna familia de direcciones pudo levantarse, abortando.")
-        await detener_persistencia()
-        sys.exit(1)
-
-    print(f"Escuchando en {', '.join(nombre for nombre, _ in servidores)}, puerto {args.puerto}")
-
-    try:
-        async with AsyncExitStack() as stack:
-            for _, servidor in servidores:
-                await stack.enter_async_context(servidor)
-            await asyncio.gather(*(servidor.serve_forever() for _, servidor in servidores))
-    finally:
-        await detener_persistencia()
 
 
 if __name__ == "__main__":

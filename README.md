@@ -106,3 +106,27 @@ python client/client.py        # REPL de cliente
 Config de DB por variables de entorno (`TURNOS_DB_HOST`, `TURNOS_DB_PORT`,
 `TURNOS_DB_USER`, `TURNOS_DB_PASSWORD`, `TURNOS_DB_NAME`) o flags
 equivalentes en `server.py`. Default: MariaDB local sin password.
+
+<!--
+TURNOS_DB_HOST=127.0.0.1 TURNOS_DB_USER=root TURNOS_DB_PASSWORD=root python3 server.py
+
+-->
+
+<!--
+cd ~/turnos-vet/client
+python3 client.py
+
+listar
+
+crear --vet "Dr. Gomez" --dueno "Juan Perez" --email "juan@ejemplo.com" --mascota "Firulais" --fecha 2026-08-20 --hora 10:00
+
+listar
+ -->
+
+<!-- -----------------------------------------------------------------------
+
+crear --vet "Dr. Torres" --dueno "Pedro Diaz" --email "a.yassuff@alumno.um.edu.ar" --mascota "Rocky" --fecha 2026-09-08 --hora 16:00
+
+
+
+ -->

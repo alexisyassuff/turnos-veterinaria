@@ -26,7 +26,19 @@
     "**/.kotlin": true,
     "**/*build": true,
     "**/backend/src/main/java/com/cine/backend/model/ExternalToken.java": true,
-    "**/proxy/src/main/java/com/cine/proxy/service/ProxyEventoInitializationService.java": true
+    "**/proxy/src/main/java/com/cine/proxy/service/ProxyEventoInitializationService.java": true,
+    "**/.gitignore": true,
+    "**/.dockerignore": true,
+    "**/CLAUDE.md": true,
+    "**/celery_results.db": true,
+    "**/celery_broker.db": true,
+    "**/venv": true,
+    "**/.claude": true,
+    "**/celerybeat-schedule": true,
+    "**/.vscode": true,
+    "**/__pycache__": true,
+    "**/.env": true,
+    "**/requirements.txt": true
   },
   "explorerExclude.backup": {}
 }

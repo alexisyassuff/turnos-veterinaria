@@ -10,9 +10,19 @@ import shlex
 PUERTO_POR_DEFECTO = 6000
 
 
-class ParserSinSalida(argparse.ArgumentParser):
-    def error(self, message):
-        raise ValueError(message)
+async def main():
+    parser = argparse.ArgumentParser(description="Cliente CLI de turnos veterinaria")
+    parser.add_argument("--host", default="localhost")
+    parser.add_argument("--puerto", type=int, default=PUERTO_POR_DEFECTO)
+    args = parser.parse_args()
+
+    reader, writer = await asyncio.open_connection(args.host, args.puerto)
+    try:
+        await repl(reader, writer)
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
 
 
 def crear_parser_repl():
@@ -74,6 +84,14 @@ async def mostrar_respuesta(reader):
         print(linea)
 
 
+
+
+
+class ParserSinSalida(argparse.ArgumentParser):
+    def error(self, message):
+        raise ValueError(message)
+    
+
 async def repl(reader, writer):
     parser = crear_parser_repl()
     loop = asyncio.get_event_loop()
@@ -111,20 +129,6 @@ async def repl(reader, writer):
             break
 
         await mostrar_respuesta(reader)
-
-
-async def main():
-    parser = argparse.ArgumentParser(description="Cliente CLI de turnos veterinaria")
-    parser.add_argument("--host", default="localhost")
-    parser.add_argument("--puerto", type=int, default=PUERTO_POR_DEFECTO)
-    args = parser.parse_args()
-
-    reader, writer = await asyncio.open_connection(args.host, args.puerto)
-    try:
-        await repl(reader, writer)
-    finally:
-        writer.close()
-        await writer.wait_closed()
 
 
 if __name__ == "__main__":
