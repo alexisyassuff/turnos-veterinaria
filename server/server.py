@@ -8,6 +8,8 @@ red, pero nunca toca SQL.
 """
 import argparse
 import asyncio
+import contextlib
+import signal
 import socket
 import sys
 from contextlib import AsyncExitStack
@@ -29,6 +31,20 @@ async def main():
     parser.add_argument("--db-password", default=None)
     parser.add_argument("--db-name", default=None)
     args = parser.parse_args()
+
+    # Handler custom para SIGINT/SIGTERM: no dependemos de que Python
+    # convierta un SIGINT en KeyboardInterrupt y esta se propague "por
+    # suerte" hasta el try/finally de mas abajo — eso ademas no cubre
+    # SIGTERM (la señal que manda Docker al frenar el contenedor), que sin
+    # handler mata el proceso al toque sin correr ninguna limpieza.
+    # loop.add_signal_handler entrega la señal de forma segura dentro del
+    # event loop (en vez de interrumpir bytecode arbitrario como hace el
+    # manejo por default de signal.signal), asi que el callback puede
+    # coordinarse con el resto de las corrutinas sin condiciones de carrera.
+    loop = asyncio.get_running_loop()
+    evento_apagado = asyncio.Event()
+    for señal in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(señal, evento_apagado.set)
 
     await iniciar_persistencia(args)
     # Verificacion 1
@@ -67,7 +83,19 @@ async def main():
         async with AsyncExitStack() as stack:
             for _, servidor in servidores:
                 await stack.enter_async_context(servidor)
-            await asyncio.gather(*(servidor.serve_forever() for _, servidor in servidores))
+
+            tarea_servir = asyncio.gather(*(servidor.serve_forever() for _, servidor in servidores))
+            tarea_señal = asyncio.create_task(evento_apagado.wait())
+            await asyncio.wait(
+                {tarea_servir, tarea_señal}, return_when=asyncio.FIRST_COMPLETED
+            )
+
+            if tarea_señal.done():
+                print("Señal de apagado recibida, cerrando servidor...")
+            if not tarea_servir.done():
+                tarea_servir.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await tarea_servir
     finally:
         await detener_persistencia()
 
@@ -149,7 +177,6 @@ async def procesar_linea(linea):
         return None
 
     return "ERROR|comando desconocido"
-
 
 
 

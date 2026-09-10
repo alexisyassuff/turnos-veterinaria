@@ -1,17 +1,24 @@
 """Tareas asincronicas de turnos veterinaria - v3.
 
 Celery con SQLite como broker (no Redis, para no sumar una dependencia
-externa mas). Corre dos roles separados del mismo archivo:
+externa mas). Un solo rol, sin beat:
 
     celery -A tasks worker --loglevel=info   # ejecuta las tareas
-    celery -A tasks beat --loglevel=info     # dispara la tarea periodica
 
-La tarea periodica consulta MariaDB directamente (no pasa por el
-servidor ni por persistencia.py) porque Celery es un proceso totalmente
-aparte del servidor de turnos: no comparte memoria ni el pipe stdin/stdout
-que usa persistencia.py, asi que la unica forma de que vea el estado de
-los turnos es leyendo la misma base. La flecha va DE Celery HACIA
-MariaDB, nunca al reves.
+No hay sondeo periodico de la base. Cada turno agenda su propio aviso una
+unica vez, en el momento en que se crea: persistencia.py calcula el eta
+(fecha/hora del turno menos la ventana de aviso) y encola
+enviar_recordatorio directamente con ese eta (ver _agendar_recordatorio en
+persistencia.py). Celery se limita a "despertar" en ese momento exacto,
+sin ningun proceso consultando la base mientras tanto.
+
+Dos flechas separadas entre este archivo y persistencia.py, cada una con
+su motivo: persistencia.py -> broker de Celery para encolar (sabe que
+existe la tarea "tasks.enviar_recordatorio" por nombre, nada mas - no
+importa este modulo); y enviar_recordatorio -> MariaDB, ya del lado de
+Celery, para revisar el estado actual del turno antes de mandar el mail
+(el eta se calculo horas o dias antes; para cuando la tarea corre, el
+turno pudo haberse confirmado o cancelado).
 """
 import datetime
 import os
@@ -47,18 +54,7 @@ SMTP_USER = os.environ.get("TURNOS_SMTP_USER", "")
 SMTP_PASSWORD = os.environ.get("TURNOS_SMTP_PASSWORD", "")
 SMTP_FROM = os.environ.get("TURNOS_SMTP_FROM", "turnos@veterinaria.local")
 
-VENTANA_AVISO_HORAS = 24
-# INTERVALO_REVISION_SEGUNDOS = 60
-# INTERVALO_REVISION_SEGUNDOS = 60
-INTERVALO_REVISION_SEGUNDOS = 10   
-
 app = Celery("tasks", broker=BROKER_URL, backend=BACKEND_URL)
-app.conf.beat_schedule = {
-    "revisar-turnos-proximos": {
-        "task": "tasks.revisar_turnos_proximos",
-        "schedule": datetime.timedelta(seconds=INTERVALO_REVISION_SEGUNDOS),
-    },
-}
 app.conf.broker_connection_retry_on_startup = True
 app.conf.timezone = "UTC"
 

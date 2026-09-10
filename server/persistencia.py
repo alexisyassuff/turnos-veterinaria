@@ -14,6 +14,7 @@ import os
 import sys
 
 import pymysql
+from celery import Celery
 
 # Duracion estandar de una consulta: cada turno "ocupa" un bloque de este
 # tamaño para el mismo veterinario. Se valida en Python (no como constraint
@@ -21,6 +22,20 @@ import pymysql
 # UNIQUE declarativo — el UNIQUE(id_veterinario, fecha, hora) que ya existe
 # sigue ahi y sigue cubriendo el caso de horario identico.
 DURACION_TURNO_MINUTOS = 40
+
+# Cuantas horas antes del turno se manda el recordatorio por mail. Vive aca
+# (y no en tasks.py) porque es lo unico que la necesita: el eta se calcula
+# en el momento de crear el turno, no cuando corre la tarea.
+VENTANA_AVISO_HORAS = 24
+
+# Cliente Celery liviano: solo encola (send_task por nombre), no importa
+# tasks.py ni conoce como se manda el mail. Evita que este proceso -que
+# hasta ahora solo sabia hablar SQL- arrastre smtplib/dotenv/config de mail
+# nada mas que para poder agendar un aviso. Mismo nombre de variable y
+# mismo default que usa tasks.py, para que ambos apunten al mismo broker
+# sin configuracion extra en local.
+CELERY_BROKER_URL = os.environ.get("TURNOS_CELERY_BROKER_URL", "sqla+sqlite:///celery_broker.db")
+celery_cliente = Celery(broker=CELERY_BROKER_URL)
 
 SENTENCIAS_ESQUEMA = [
     """
@@ -174,7 +189,38 @@ def manejar_crear_turno(cursor, partes):
     except pymysql.err.IntegrityError:
         return "ERROR|ese veterinario ya tiene un turno en esa fecha y hora"
 
-    return f"OK|{cursor.lastrowid}"
+    id_turno = cursor.lastrowid
+    _agendar_recordatorio(id_turno, vet, dueno, mascota, fecha_valor, hora_valor, email)
+    return f"OK|{id_turno}"
+
+
+def _agendar_recordatorio(id_turno, vet, dueno, mascota, fecha_valor, hora_valor, email):
+    """Encola enviar_recordatorio para que dispare solo, en su momento.
+
+    El eta se calcula con un datetime *aware* (con tzinfo del sistema) a
+    proposito: si se le pasa uno naive a Celery, lo interpreta segun el
+    timezone configurado del lado del worker (UTC en tasks.py), tratando
+    la hora local del turno como si ya fuera UTC y desfasando el aviso.
+    Con un datetime aware no hay ambiguedad que resolver.
+
+    Si el turno queda a menos de VENTANA_AVISO_HORAS de haberse creado, el
+    eta cae en el pasado y Celery ejecuta la tarea de inmediato -
+    comportamiento correcto, no hace falta caso especial.
+    """
+    zona_local = datetime.datetime.now().astimezone().tzinfo
+    momento_turno = datetime.datetime.combine(fecha_valor, hora_valor, tzinfo=zona_local)
+    eta = momento_turno - datetime.timedelta(hours=VENTANA_AVISO_HORAS)
+
+    try:
+        celery_cliente.send_task(
+            "tasks.enviar_recordatorio",
+            args=[id_turno, vet, dueno, mascota, fecha_valor.isoformat(), hora_valor.strftime("%H:%M"), email],
+            eta=eta,
+        )
+    except Exception as error:
+        # No tiramos abajo la creacion del turno (ya esta commiteada en
+        # MariaDB) por un problema de Celery/broker. Se loguea y listo.
+        print(f"No se pudo agendar el recordatorio del turno {id_turno}: {error}", file=sys.stderr, flush=True)
 
 
 def manejar_listar_turnos(cursor):
