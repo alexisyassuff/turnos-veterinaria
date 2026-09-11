@@ -6,5 +6,6 @@ node_modules/
 .env
 *.db
 *.sqlite3
+celerybeat-schedule
 CLAUDE.md
 .claude/

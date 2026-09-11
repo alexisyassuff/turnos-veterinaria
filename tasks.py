@@ -20,7 +20,6 @@ Celery, para revisar el estado actual del turno antes de mandar el mail
 (el eta se calculo horas o dias antes; para cuando la tarea corre, el
 turno pudo haberse confirmado o cancelado).
 """
-import datetime
 import os
 import smtplib
 from email.message import EmailMessage
@@ -42,7 +41,8 @@ DB_NAME = os.environ.get("TURNOS_DB_NAME", "turnos_vet")
 
 # Broker y backend de Celery. Local por defecto (archivo en el directorio
 # actual); en Docker se pisan por env var para apuntar al volumen
-# compartido entre worker y beat (ver docker-compose.yml).
+# compartido con persistencia.py, que encola en el mismo broker (ver
+# docker-compose.yml).
 BROKER_URL = os.environ.get("TURNOS_CELERY_BROKER_URL", "sqla+sqlite:///celery_broker.db")
 BACKEND_URL = os.environ.get("TURNOS_CELERY_BACKEND_URL", "db+sqlite:///celery_results.db")
 
@@ -71,54 +71,27 @@ def _conectar_db():
 
 
 @app.task
-def revisar_turnos_proximos():
-    """Busca turnos pendientes dentro de las proximas 24hs y encola su aviso.
+def enviar_recordatorio(id_turno, vet, dueno, mascota, fecha, hora, email):
+    """Manda el mail de recordatorio para un turno puntual via SMTP.
 
-    La columna `recordatorio_enviado` evita que un mismo turno se
-    reencole en cada corrida (cada 60s) mientras sigue dentro de la
-    ventana de 24hs; sin esa marca se mandarian decenas de mails
-    repetidos por turno. Se agrega aca con `ADD COLUMN IF NOT EXISTS`
-    (sintaxis propia de MariaDB) en vez de en persistencia.py porque es
-    una necesidad exclusiva de v3, no del modelo base de v2.
+    El eta con el que se agendo esta tarea se calculo en persistencia.py
+    al momento de crear el turno, potencialmente horas o dias antes de
+    que esto corra. En el medio el dueno pudo haber confirmado o
+    cancelado, asi que no confiamos en los datos que se le pasaron a la
+    tarea al encolarla - se vuelve a consultar el estado actual antes de
+    mandar nada.
     """
     conexion = _conectar_db()
     try:
         with conexion.cursor() as cursor:
-            cursor.execute(
-                "ALTER TABLE turnos ADD COLUMN IF NOT EXISTS "
-                "recordatorio_enviado TINYINT(1) NOT NULL DEFAULT 0"
-            )
-            cursor.execute(
-                """
-                SELECT t.id_turno, v.nombre, d.nombre, m.nombre, t.fecha, t.hora, d.email
-                FROM turnos t
-                JOIN veterinarios v ON v.id_veterinario = t.id_veterinario
-                JOIN mascotas m ON m.id_mascota = t.id_mascota
-                JOIN duenos d ON d.id_dueno = m.id_dueno
-                WHERE t.estado = 'pendiente'
-                  AND t.recordatorio_enviado = 0
-                  AND TIMESTAMP(t.fecha, t.hora) BETWEEN NOW() AND NOW() + INTERVAL %s HOUR
-                """,
-                (VENTANA_AVISO_HORAS,),
-            )
-            turnos = cursor.fetchall()
-
-            for id_turno, vet, dueno, mascota, fecha, hora, email in turnos:
-                enviar_recordatorio.delay(
-                    id_turno, vet, dueno, mascota, fecha.isoformat(), _formatear_hora(hora), email
-                )
-                cursor.execute(
-                    "UPDATE turnos SET recordatorio_enviado = 1 WHERE id_turno = %s",
-                    (id_turno,),
-                )
+            cursor.execute("SELECT estado FROM turnos WHERE id_turno=%s", (id_turno,))
+            fila = cursor.fetchone()
     finally:
         conexion.close()
 
+    if fila is None or fila[0] != "pendiente":
+        return
 
-
-@app.task
-def enviar_recordatorio(id_turno, vet, dueno, mascota, fecha, hora, email):
-    """Manda el mail de recordatorio para un turno puntual via SMTP."""
     mensaje = EmailMessage()
     mensaje["Subject"] = f"Recordatorio de turno para {dueno}"
     mensaje["From"] = SMTP_FROM
@@ -145,13 +118,3 @@ def enviar_recordatorio(id_turno, vet, dueno, mascota, fecha, hora, email):
             smtp.starttls()
             smtp.login(SMTP_USER, SMTP_PASSWORD)
         smtp.send_message(mensaje)
-
-
-def _formatear_hora(valor):
-    # PyMySQL devuelve las columnas TIME como timedelta, no como time.
-    if isinstance(valor, datetime.timedelta):
-        total_segundos = int(valor.total_seconds())
-        horas, resto = divmod(total_segundos, 3600)
-        minutos = resto // 60
-        return f"{horas:02d}:{minutos:02d}"
-    return valor.strftime("%H:%M")

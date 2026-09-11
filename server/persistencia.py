@@ -37,46 +37,6 @@ VENTANA_AVISO_HORAS = 24
 CELERY_BROKER_URL = os.environ.get("TURNOS_CELERY_BROKER_URL", "sqla+sqlite:///celery_broker.db")
 celery_cliente = Celery(broker=CELERY_BROKER_URL)
 
-SENTENCIAS_ESQUEMA = [
-    """
-    CREATE TABLE IF NOT EXISTS veterinarios (
-        id_veterinario INT AUTO_INCREMENT PRIMARY KEY,
-        nombre VARCHAR(120) NOT NULL
-    )
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS duenos (
-        id_dueno INT AUTO_INCREMENT PRIMARY KEY,
-        nombre VARCHAR(120) NOT NULL
-    )
-    """,
-    """
-    ALTER TABLE duenos ADD COLUMN IF NOT EXISTS email VARCHAR(120)
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS mascotas (
-        id_mascota INT AUTO_INCREMENT PRIMARY KEY,
-        id_dueno INT NOT NULL,
-        nombre VARCHAR(80) NOT NULL,
-        FOREIGN KEY (id_dueno) REFERENCES duenos(id_dueno) ON DELETE RESTRICT,
-        UNIQUE (id_dueno, nombre)
-    )
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS turnos (
-        id_turno INT AUTO_INCREMENT PRIMARY KEY,
-        id_veterinario INT NOT NULL,
-        id_mascota INT NOT NULL,
-        fecha DATE NOT NULL,
-        hora TIME NOT NULL,
-        estado ENUM('pendiente', 'confirmado', 'cancelado') NOT NULL DEFAULT 'pendiente',
-        FOREIGN KEY (id_veterinario) REFERENCES veterinarios(id_veterinario) ON DELETE RESTRICT,
-        FOREIGN KEY (id_mascota) REFERENCES mascotas(id_mascota) ON DELETE RESTRICT,
-        UNIQUE (id_veterinario, fecha, hora)
-    )
-    """,
-]
-
 
 def main():
     parser = argparse.ArgumentParser(description="Proceso de persistencia de turnos veterinaria")
@@ -120,20 +80,18 @@ def main():
 
 
 def conectar(args):
-    conexion = pymysql.connect(
+    # El esquema (tablas, FKs, constraints) ya no se crea desde aca: vive en
+    # db/schema.sql, aplicado por MariaDB al inicializar su volumen (patron
+    # docker-entrypoint-initdb.d) o a mano en desarrollo local (ver README).
+    # Este proceso asume que la base y las tablas ya existen.
+    return pymysql.connect(
         host=args.db_host,
         port=args.db_port,
         user=args.db_user,
         password=args.db_password,
+        database=args.db_name,
         autocommit=True,
     )
-    with conexion.cursor() as cursor:
-        cursor.execute(f"CREATE DATABASE IF NOT EXISTS `{args.db_name}`")
-    conexion.select_db(args.db_name)
-    with conexion.cursor() as cursor:
-        for sentencia in SENTENCIAS_ESQUEMA:
-            cursor.execute(sentencia)
-    return conexion
 
 
 
