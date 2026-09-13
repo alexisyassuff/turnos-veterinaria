@@ -16,26 +16,10 @@ import sys
 import pymysql
 from celery import Celery
 
-# Duracion estandar de una consulta: cada turno "ocupa" un bloque de este
-# tamaño para el mismo veterinario. Se valida en Python (no como constraint
-# de MariaDB) porque un rango de superposicion no se puede expresar con un
-# UNIQUE declarativo — el UNIQUE(id_veterinario, fecha, hora) que ya existe
-# sigue ahi y sigue cubriendo el caso de horario identico.
 DURACION_TURNO_MINUTOS = 40
 
-# Cuantas horas antes del turno se manda el recordatorio por mail. Vive aca
-# (y no en tasks.py) porque es lo unico que la necesita: el eta se calcula
-# en el momento de crear el turno, no cuando corre la tarea.
 VENTANA_AVISO_HORAS = 24
 
-# Cliente Celery liviano: solo encola (send_task por nombre), no importa
-# tasks.py ni conoce como se manda el mail. Evita que este proceso -que
-# hasta ahora solo sabia hablar SQL- arrastre smtplib/dotenv/config de mail
-# nada mas que para poder agendar un aviso. Mismo nombre de variable y
-# mismo default que usa tasks.py, para que ambos apunten al mismo broker
-# sin configuracion extra en local.
-CELERY_BROKER_URL = os.environ.get("TURNOS_CELERY_BROKER_URL", "sqla+sqlite:///celery_broker.db")
-celery_cliente = Celery(broker=CELERY_BROKER_URL)
 
 
 def main():
@@ -59,6 +43,7 @@ def main():
         flush=True,
     )
 
+    # Cada vez que server.py escribe algo en el stdin de este proceso, se recibe aca
     for linea in sys.stdin:
         linea = linea.rstrip("\n")
         if not linea:
@@ -80,9 +65,6 @@ def main():
 
 
 def conectar(args):
-    # El esquema (tablas, FKs, constraints) ya no se crea desde aca: vive en
-    # db/schema.sql, aplicado por MariaDB al inicializar su volumen (patron
-    # docker-entrypoint-initdb.d) o a mano en desarrollo local (ver README).
     # Este proceso asume que la base y las tablas ya existen.
     return pymysql.connect(
         host=args.db_host,
@@ -92,7 +74,6 @@ def conectar(args):
         database=args.db_name,
         autocommit=True,
     )
-
 
 
 def procesar_linea(cursor, linea):
@@ -114,6 +95,7 @@ def procesar_linea(cursor, linea):
 
 
 def manejar_crear_turno(cursor, partes):
+    #    Chequea que vengan exactamente 7 partes
     if len(partes) != 7:
         return "ERROR|formato invalido, se esperan 6 argumentos"
     _, vet, dueno, email, mascota, fecha, hora = partes
@@ -124,21 +106,26 @@ def manejar_crear_turno(cursor, partes):
     except ValueError:
         return "ERROR|formato invalido, use fecha AAAA-MM-DD y hora HH:MM"
 
+
+    # Obtener ID de dueño, mascota y veterinario
     id_dueno = _obtener_o_crear(cursor, "duenos", "id_dueno", {"nombre": dueno}, extra={"email": email})
     id_mascota = _obtener_o_crear(
         cursor, "mascotas", "id_mascota", {"id_dueno": id_dueno, "nombre": mascota}
     )
     id_vet = _obtener_o_crear(cursor, "veterinarios", "id_veterinario", {"nombre": vet})
 
+    # validación de superposición de 40 minutos
     cursor.execute(
         "SELECT hora FROM turnos WHERE id_veterinario=%s AND fecha=%s",
         (id_vet, fecha_valor),
     )
+
     minutos_nuevo = hora_valor.hour * 60 + hora_valor.minute
     for (hora_existente,) in cursor.fetchall():
         if abs(minutos_nuevo - _hora_a_minutos(hora_existente)) < DURACION_TURNO_MINUTOS:
             return "ERROR|ese veterinario ya tiene un turno que se superpone en ese horario (bloque de 40 minutos)"
 
+    # Insercion del turno
     try:
         cursor.execute(
             "INSERT INTO turnos (id_veterinario, id_mascota, fecha, hora) VALUES (%s, %s, %s, %s)",
@@ -152,19 +139,12 @@ def manejar_crear_turno(cursor, partes):
     return f"OK|{id_turno}"
 
 
+
+CELERY_BROKER_URL = os.environ.get("TURNOS_CELERY_BROKER_URL", "sqla+sqlite:///celery_broker.db")
+celery_cliente = Celery(broker=CELERY_BROKER_URL)
+
 def _agendar_recordatorio(id_turno, vet, dueno, mascota, fecha_valor, hora_valor, email):
-    """Encola enviar_recordatorio para que dispare solo, en su momento.
 
-    El eta se calcula con un datetime *aware* (con tzinfo del sistema) a
-    proposito: si se le pasa uno naive a Celery, lo interpreta segun el
-    timezone configurado del lado del worker (UTC en tasks.py), tratando
-    la hora local del turno como si ya fuera UTC y desfasando el aviso.
-    Con un datetime aware no hay ambiguedad que resolver.
-
-    Si el turno queda a menos de VENTANA_AVISO_HORAS de haberse creado, el
-    eta cae en el pasado y Celery ejecuta la tarea de inmediato -
-    comportamiento correcto, no hace falta caso especial.
-    """
     zona_local = datetime.datetime.now().astimezone().tzinfo
     momento_turno = datetime.datetime.combine(fecha_valor, hora_valor, tzinfo=zona_local)
     eta = momento_turno - datetime.timedelta(hours=VENTANA_AVISO_HORAS)

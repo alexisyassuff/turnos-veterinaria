@@ -32,23 +32,16 @@ async def main():
     parser.add_argument("--db-name", default=None)
     args = parser.parse_args()
 
-    # Handler custom para SIGINT/SIGTERM: no dependemos de que Python
-    # convierta un SIGINT en KeyboardInterrupt y esta se propague "por
-    # suerte" hasta el try/finally de mas abajo — eso ademas no cubre
-    # SIGTERM (la señal que manda Docker al frenar el contenedor), que sin
-    # handler mata el proceso al toque sin correr ninguna limpieza.
-    # loop.add_signal_handler entrega la señal de forma segura dentro del
-    # event loop (en vez de interrumpir bytecode arbitrario como hace el
-    # manejo por default de signal.signal), asi que el callback puede
-    # coordinarse con el resto de las corrutinas sin condiciones de carrera.
+
     loop = asyncio.get_running_loop()
     evento_apagado = asyncio.Event()
     for señal in (signal.SIGINT, signal.SIGTERM):
+    # Logica de CTRL + C  ----> No signal.signal
         loop.add_signal_handler(señal, evento_apagado.set)
 
     await iniciar_persistencia(args)
+    
     # Verificacion 1
-
     familias_candidatas = [
         ("IPv4", socket.AF_INET, "0.0.0.0"),
         ("IPv6", socket.AF_INET6, "::"),
@@ -56,6 +49,7 @@ async def main():
     familias = []
     for nombre, familia, host in familias_candidatas:
         try:
+        # bajando a nivel del kernel --> ver si la máquina soporta IPv6
             socket.getaddrinfo(
                 None, args.puerto, family=familia, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE
             )
@@ -67,6 +61,7 @@ async def main():
     servidores = []
     for nombre, host in familias:
         try:
+        # Manejar fallos en tiempo de ejecución
             servidor = await asyncio.start_server(manejar_cliente, host=host, port=args.puerto)
             servidores.append((nombre, servidor))
         except OSError as e:
@@ -86,7 +81,10 @@ async def main():
 
             tarea_servir = asyncio.gather(*(servidor.serve_forever() for _, servidor in servidores))
             tarea_señal = asyncio.create_task(evento_apagado.wait())
+    
+            # Guardia revisando si alarma suena      
             await asyncio.wait(
+                # Nucleo de la concurrencia FIRST_COMPLETED
                 {tarea_servir, tarea_señal}, return_when=asyncio.FIRST_COMPLETED
             )
 
@@ -136,8 +134,11 @@ async def manejar_cliente(reader, writer):
     direccion = writer.get_extra_info("peername")
     print(f"Cliente conectado: {direccion}")
     try:
+        # conexion abierta
         while True:
+            # el servidor se queda esperando líneas de comandos
             datos = await reader.readline()
+            # cerró la terminal del cliente sin mandar SALIR
             if not datos:
                 break
 
@@ -155,6 +156,7 @@ async def manejar_cliente(reader, writer):
             await writer.drain()
     except ConnectionResetError:
         pass
+    # cierra el socket de ese cliente puntual de forma prolija, liberando los recursos que estaba usando.
     finally:
         print(f"Cliente desconectado: {direccion}")
         writer.close()
@@ -177,7 +179,6 @@ async def procesar_linea(linea):
         return None
 
     return "ERROR|comando desconocido"
-
 
 
 async def manejar_crear(partes):
@@ -215,9 +216,11 @@ async def manejar_confirmar(partes):
 
 async def enviar_a_persistencia(comando):
     async def _intercambio():
+        # IDA: un solo canal físico  ​stdin de persistencia.py​. solo sirve para que server.py le mande cosas a persistencia.p
         proceso_persistencia.stdin.write((comando + "\n").encode())
         await proceso_persistencia.stdin.drain()
 
+        # VUELTA: otro canal físico: el stdout de persistencia.py. solo sirve para que persistencia.py le conteste a server.py.
         linea = await proceso_persistencia.stdout.readline()
         if not linea:
             return "ERROR|conexion con el proceso de persistencia perdida"
@@ -238,8 +241,6 @@ async def enviar_a_persistencia(comando):
             return await asyncio.wait_for(_intercambio(), timeout=5)
         except asyncio.TimeoutError:
             return "ERROR|timeout esperando al proceso de persistencia"
-
-
 
 
 if __name__ == "__main__":
