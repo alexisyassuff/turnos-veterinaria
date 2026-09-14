@@ -1,13 +1,3 @@
-"""Proceso de persistencia de turnos veterinaria - v2.
-
-Corre como proceso separado del servidor principal. Se comunica por
-stdin/stdout (pipes) linea por linea, mismo estilo de protocolo que la
-capa de red (COMANDO|arg1|arg2|...). Es el unico proceso que abre
-conexion a MariaDB; el servidor nunca arma SQL directamente.
-
-stdout se usa exclusivamente para el protocolo. Logs y errores de
-arranque van a stderr.
-"""
 import argparse
 import datetime
 import os
@@ -156,8 +146,6 @@ def _agendar_recordatorio(id_turno, vet, dueno, mascota, fecha_valor, hora_valor
             eta=eta,
         )
     except Exception as error:
-        # No tiramos abajo la creacion del turno (ya esta commiteada en
-        # MariaDB) por un problema de Celery/broker. Se loguea y listo.
         print(f"No se pudo agendar el recordatorio del turno {id_turno}: {error}", file=sys.stderr, flush=True)
 
 

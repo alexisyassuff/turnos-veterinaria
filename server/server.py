@@ -1,11 +1,3 @@
-"""Servidor de turnos veterinaria - v2.
-
-Dual-stack IPv4/IPv6 (sin cambios respecto a v1). El estado ya no vive
-en memoria: cada operacion se delega a un proceso de persistencia
-separado (persistencia.py), lanzado como subproceso y hablado por
-stdin/stdout linea por linea (Pipes). El servidor arma el protocolo de
-red, pero nunca toca SQL.
-"""
 import argparse
 import asyncio
 import contextlib

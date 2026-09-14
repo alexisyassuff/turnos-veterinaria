@@ -1,13 +1,7 @@
 -- db/schema.sql
 -- Script de inicializacion para MariaDB (patron docker-entrypoint-initdb.d).
 -- Se ejecuta automaticamente la primera vez que el contenedor arranca con
--- un volumen de datos vacio, contra la base que Docker ya crea y selecciona
--- via MARIADB_DATABASE. persistencia.py ya no crea tablas: solo se conecta.
---
--- Los IF NOT EXISTS no son necesarios para el arranque de Docker (este
--- script corre una sola vez, contra un volumen vacio) pero se mantienen
--- para poder re-aplicar este mismo archivo a mano contra una base de
--- desarrollo sin romper nada si ya se habia corrido antes.
+-- un volumen de datos vacio
 
 CREATE TABLE IF NOT EXISTS veterinarios (
     id_veterinario INT AUTO_INCREMENT PRIMARY KEY,
