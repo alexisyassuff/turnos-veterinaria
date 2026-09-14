@@ -1,13 +1,7 @@
-"""Servidor de turnos veterinaria - v2.
-
-Dual-stack IPv4/IPv6 (sin cambios respecto a v1). El estado ya no vive
-en memoria: cada operacion se delega a un proceso de persistencia
-separado (persistencia.py), lanzado como subproceso y hablado por
-stdin/stdout linea por linea (Pipes). El servidor arma el protocolo de
-red, pero nunca toca SQL.
-"""
 import argparse
 import asyncio
+import contextlib
+import signal
 import socket
 import sys
 from contextlib import AsyncExitStack
@@ -30,9 +24,16 @@ async def main():
     parser.add_argument("--db-name", default=None)
     args = parser.parse_args()
 
-    await iniciar_persistencia(args)
-    # Verificacion 1
 
+    loop = asyncio.get_running_loop()
+    evento_apagado = asyncio.Event()
+    for señal in (signal.SIGINT, signal.SIGTERM):
+    # Logica de CTRL + C  ----> No signal.signal
+        loop.add_signal_handler(señal, evento_apagado.set)
+
+    await iniciar_persistencia(args)
+    
+    # Verificacion 1
     familias_candidatas = [
         ("IPv4", socket.AF_INET, "0.0.0.0"),
         ("IPv6", socket.AF_INET6, "::"),
@@ -40,6 +41,7 @@ async def main():
     familias = []
     for nombre, familia, host in familias_candidatas:
         try:
+        # bajando a nivel del kernel --> ver si la máquina soporta IPv6
             socket.getaddrinfo(
                 None, args.puerto, family=familia, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE
             )
@@ -51,6 +53,7 @@ async def main():
     servidores = []
     for nombre, host in familias:
         try:
+        # Manejar fallos en tiempo de ejecución
             servidor = await asyncio.start_server(manejar_cliente, host=host, port=args.puerto)
             servidores.append((nombre, servidor))
         except OSError as e:
@@ -67,7 +70,22 @@ async def main():
         async with AsyncExitStack() as stack:
             for _, servidor in servidores:
                 await stack.enter_async_context(servidor)
-            await asyncio.gather(*(servidor.serve_forever() for _, servidor in servidores))
+
+            tarea_servir = asyncio.gather(*(servidor.serve_forever() for _, servidor in servidores))
+            tarea_señal = asyncio.create_task(evento_apagado.wait())
+    
+            # Guardia revisando si alarma suena      
+            await asyncio.wait(
+                # Nucleo de la concurrencia FIRST_COMPLETED
+                {tarea_servir, tarea_señal}, return_when=asyncio.FIRST_COMPLETED
+            )
+
+            if tarea_señal.done():
+                print("Señal de apagado recibida, cerrando servidor...")
+            if not tarea_servir.done():
+                tarea_servir.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await tarea_servir
     finally:
         await detener_persistencia()
 
@@ -108,8 +126,11 @@ async def manejar_cliente(reader, writer):
     direccion = writer.get_extra_info("peername")
     print(f"Cliente conectado: {direccion}")
     try:
+        # conexion abierta
         while True:
+            # el servidor se queda esperando líneas de comandos
             datos = await reader.readline()
+            # cerró la terminal del cliente sin mandar SALIR
             if not datos:
                 break
 
@@ -127,6 +148,7 @@ async def manejar_cliente(reader, writer):
             await writer.drain()
     except ConnectionResetError:
         pass
+    # cierra el socket de ese cliente puntual de forma prolija, liberando los recursos que estaba usando.
     finally:
         print(f"Cliente desconectado: {direccion}")
         writer.close()
@@ -149,8 +171,6 @@ async def procesar_linea(linea):
         return None
 
     return "ERROR|comando desconocido"
-
-
 
 
 async def manejar_crear(partes):
@@ -188,9 +208,11 @@ async def manejar_confirmar(partes):
 
 async def enviar_a_persistencia(comando):
     async def _intercambio():
+        # IDA: un solo canal físico  ​stdin de persistencia.py​. solo sirve para que server.py le mande cosas a persistencia.p
         proceso_persistencia.stdin.write((comando + "\n").encode())
         await proceso_persistencia.stdin.drain()
 
+        # VUELTA: otro canal físico: el stdout de persistencia.py. solo sirve para que persistencia.py le conteste a server.py.
         linea = await proceso_persistencia.stdout.readline()
         if not linea:
             return "ERROR|conexion con el proceso de persistencia perdida"
@@ -211,8 +233,6 @@ async def enviar_a_persistencia(comando):
             return await asyncio.wait_for(_intercambio(), timeout=5)
         except asyncio.TimeoutError:
             return "ERROR|timeout esperando al proceso de persistencia"
-
-
 
 
 if __name__ == "__main__":

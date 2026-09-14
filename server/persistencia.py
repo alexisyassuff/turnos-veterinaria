@@ -1,66 +1,15 @@
-"""Proceso de persistencia de turnos veterinaria - v2.
-
-Corre como proceso separado del servidor principal. Se comunica por
-stdin/stdout (pipes) linea por linea, mismo estilo de protocolo que la
-capa de red (COMANDO|arg1|arg2|...). Es el unico proceso que abre
-conexion a MariaDB; el servidor nunca arma SQL directamente.
-
-stdout se usa exclusivamente para el protocolo. Logs y errores de
-arranque van a stderr.
-"""
 import argparse
 import datetime
 import os
 import sys
 
 import pymysql
+from celery import Celery
 
-# Duracion estandar de una consulta: cada turno "ocupa" un bloque de este
-# tamaño para el mismo veterinario. Se valida en Python (no como constraint
-# de MariaDB) porque un rango de superposicion no se puede expresar con un
-# UNIQUE declarativo — el UNIQUE(id_veterinario, fecha, hora) que ya existe
-# sigue ahi y sigue cubriendo el caso de horario identico.
 DURACION_TURNO_MINUTOS = 40
 
-SENTENCIAS_ESQUEMA = [
-    """
-    CREATE TABLE IF NOT EXISTS veterinarios (
-        id_veterinario INT AUTO_INCREMENT PRIMARY KEY,
-        nombre VARCHAR(120) NOT NULL
-    )
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS duenos (
-        id_dueno INT AUTO_INCREMENT PRIMARY KEY,
-        nombre VARCHAR(120) NOT NULL
-    )
-    """,
-    """
-    ALTER TABLE duenos ADD COLUMN IF NOT EXISTS email VARCHAR(120)
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS mascotas (
-        id_mascota INT AUTO_INCREMENT PRIMARY KEY,
-        id_dueno INT NOT NULL,
-        nombre VARCHAR(80) NOT NULL,
-        FOREIGN KEY (id_dueno) REFERENCES duenos(id_dueno) ON DELETE RESTRICT,
-        UNIQUE (id_dueno, nombre)
-    )
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS turnos (
-        id_turno INT AUTO_INCREMENT PRIMARY KEY,
-        id_veterinario INT NOT NULL,
-        id_mascota INT NOT NULL,
-        fecha DATE NOT NULL,
-        hora TIME NOT NULL,
-        estado ENUM('pendiente', 'confirmado', 'cancelado') NOT NULL DEFAULT 'pendiente',
-        FOREIGN KEY (id_veterinario) REFERENCES veterinarios(id_veterinario) ON DELETE RESTRICT,
-        FOREIGN KEY (id_mascota) REFERENCES mascotas(id_mascota) ON DELETE RESTRICT,
-        UNIQUE (id_veterinario, fecha, hora)
-    )
-    """,
-]
+VENTANA_AVISO_HORAS = 24
+
 
 
 def main():
@@ -84,6 +33,7 @@ def main():
         flush=True,
     )
 
+    # Cada vez que server.py escribe algo en el stdin de este proceso, se recibe aca
     for linea in sys.stdin:
         linea = linea.rstrip("\n")
         if not linea:
@@ -105,21 +55,15 @@ def main():
 
 
 def conectar(args):
-    conexion = pymysql.connect(
+    # Este proceso asume que la base y las tablas ya existen.
+    return pymysql.connect(
         host=args.db_host,
         port=args.db_port,
         user=args.db_user,
         password=args.db_password,
+        database=args.db_name,
         autocommit=True,
     )
-    with conexion.cursor() as cursor:
-        cursor.execute(f"CREATE DATABASE IF NOT EXISTS `{args.db_name}`")
-    conexion.select_db(args.db_name)
-    with conexion.cursor() as cursor:
-        for sentencia in SENTENCIAS_ESQUEMA:
-            cursor.execute(sentencia)
-    return conexion
-
 
 
 def procesar_linea(cursor, linea):
@@ -141,6 +85,7 @@ def procesar_linea(cursor, linea):
 
 
 def manejar_crear_turno(cursor, partes):
+    #    Chequea que vengan exactamente 7 partes
     if len(partes) != 7:
         return "ERROR|formato invalido, se esperan 6 argumentos"
     _, vet, dueno, email, mascota, fecha, hora = partes
@@ -151,21 +96,26 @@ def manejar_crear_turno(cursor, partes):
     except ValueError:
         return "ERROR|formato invalido, use fecha AAAA-MM-DD y hora HH:MM"
 
+
+    # Obtener ID de dueño, mascota y veterinario
     id_dueno = _obtener_o_crear(cursor, "duenos", "id_dueno", {"nombre": dueno}, extra={"email": email})
     id_mascota = _obtener_o_crear(
         cursor, "mascotas", "id_mascota", {"id_dueno": id_dueno, "nombre": mascota}
     )
     id_vet = _obtener_o_crear(cursor, "veterinarios", "id_veterinario", {"nombre": vet})
 
+    # validación de superposición de 40 minutos
     cursor.execute(
         "SELECT hora FROM turnos WHERE id_veterinario=%s AND fecha=%s",
         (id_vet, fecha_valor),
     )
+
     minutos_nuevo = hora_valor.hour * 60 + hora_valor.minute
     for (hora_existente,) in cursor.fetchall():
         if abs(minutos_nuevo - _hora_a_minutos(hora_existente)) < DURACION_TURNO_MINUTOS:
             return "ERROR|ese veterinario ya tiene un turno que se superpone en ese horario (bloque de 40 minutos)"
 
+    # Insercion del turno
     try:
         cursor.execute(
             "INSERT INTO turnos (id_veterinario, id_mascota, fecha, hora) VALUES (%s, %s, %s, %s)",
@@ -174,7 +124,29 @@ def manejar_crear_turno(cursor, partes):
     except pymysql.err.IntegrityError:
         return "ERROR|ese veterinario ya tiene un turno en esa fecha y hora"
 
-    return f"OK|{cursor.lastrowid}"
+    id_turno = cursor.lastrowid
+    _agendar_recordatorio(id_turno, vet, dueno, mascota, fecha_valor, hora_valor, email)
+    return f"OK|{id_turno}"
+
+
+
+CELERY_BROKER_URL = os.environ.get("TURNOS_CELERY_BROKER_URL", "sqla+sqlite:///celery_broker.db")
+celery_cliente = Celery(broker=CELERY_BROKER_URL)
+
+def _agendar_recordatorio(id_turno, vet, dueno, mascota, fecha_valor, hora_valor, email):
+
+    zona_local = datetime.datetime.now().astimezone().tzinfo
+    momento_turno = datetime.datetime.combine(fecha_valor, hora_valor, tzinfo=zona_local)
+    eta = momento_turno - datetime.timedelta(hours=VENTANA_AVISO_HORAS)
+
+    try:
+        celery_cliente.send_task(
+            "tasks.enviar_recordatorio",
+            args=[id_turno, vet, dueno, mascota, fecha_valor.isoformat(), hora_valor.strftime("%H:%M"), email],
+            eta=eta,
+        )
+    except Exception as error:
+        print(f"No se pudo agendar el recordatorio del turno {id_turno}: {error}", file=sys.stderr, flush=True)
 
 
 def manejar_listar_turnos(cursor):

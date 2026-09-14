@@ -1,8 +1,3 @@
-"""Cliente CLI de turnos veterinaria - v1.
-
-Conexion persistente via asyncio, REPL interactivo con sub-comandos
-parseados por argparse en cada linea.
-"""
 import argparse
 import asyncio
 import shlex
