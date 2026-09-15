@@ -122,37 +122,6 @@ async def detener_persistencia():
     proceso_persistencia.stdin.close()
     await proceso_persistencia.wait()
 
-async def manejar_cliente(reader, writer):
-    direccion = writer.get_extra_info("peername")
-    print(f"Cliente conectado: {direccion}")
-    try:
-        # conexion abierta
-        while True:
-            # el servidor se queda esperando líneas de comandos
-            datos = await reader.readline()
-            # cerró la terminal del cliente sin mandar SALIR
-            if not datos:
-                break
-
-            linea = datos.decode().rstrip("\r\n")
-            if not linea:
-                continue
-
-            respuesta = await procesar_linea(linea)
-            if respuesta is None:
-                writer.write(b"OK|CHAU\n")
-                await writer.drain()
-                break
-
-            writer.write((respuesta + "\n").encode())
-            await writer.drain()
-    except ConnectionResetError:
-        pass
-    # cierra el socket de ese cliente puntual de forma prolija, liberando los recursos que estaba usando.
-    finally:
-        print(f"Cliente desconectado: {direccion}")
-        writer.close()
-        await writer.wait_closed()
 
 
 async def procesar_linea(linea):
@@ -233,6 +202,40 @@ async def enviar_a_persistencia(comando):
             return await asyncio.wait_for(_intercambio(), timeout=5)
         except asyncio.TimeoutError:
             return "ERROR|timeout esperando al proceso de persistencia"
+        
+
+async def manejar_cliente(reader, writer):
+    direccion = writer.get_extra_info("peername")
+    print(f"Cliente conectado: {direccion}")
+    try:
+        # conexion abierta
+        while True:
+            # el servidor se queda esperando líneas de comandos
+            datos = await reader.readline()
+            # cerró la terminal del cliente sin mandar SALIR
+            if not datos:
+                break
+
+            linea = datos.decode().rstrip("\r\n")
+            if not linea:
+                continue
+
+            respuesta = await procesar_linea(linea)
+            if respuesta is None:
+                writer.write(b"OK|CHAU\n")
+                await writer.drain()
+                break
+
+            writer.write((respuesta + "\n").encode())
+            await writer.drain()
+    except ConnectionResetError:
+        pass
+    # cierra el socket de ese cliente puntual de forma prolija, liberando los recursos que estaba usando.
+    finally:
+        print(f"Cliente desconectado: {direccion}")
+        writer.close()
+        await writer.wait_closed()
+
 
 
 if __name__ == "__main__":
