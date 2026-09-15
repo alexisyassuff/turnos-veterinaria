@@ -80,8 +80,6 @@ async def mostrar_respuesta(reader):
 
 
 
-
-
 class ParserSinSalida(argparse.ArgumentParser):
     def error(self, message):
         raise ValueError(message)
